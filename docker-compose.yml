@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: netinventory_db
+    restart: always
+    environment:
+      POSTGRES_DB: netinventory_db
+      POSTGRES_USER: netuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-netpassword123}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netuser -d netinventory_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: netinventory_redis
+    restart: always
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-devredispass}"]
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: netinventory_backend
+    depends_on:
+        postgres:
+          condition: service_healthy
+        redis:
+          condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://netuser:${POSTGRES_PASSWORD:-netpassword123}@postgres:5432/netinventory_db
+      REDIS_URL: redis://:${REDIS_PASSWORD:-devredispass}@redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-netinventory-local-development-key-change-before-deployment-2026}
+      JWT_ALGORITHM: HS256
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      MONITORING_INTERVAL_SECONDS: ${MONITORING_INTERVAL_SECONDS:-60}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_FAILURES: ${ALERT_FAILURES:-3}
+      ALERT_LATENCY_MS: ${ALERT_LATENCY_MS:-200}
+      ALERT_LATENCY_SAMPLES: ${ALERT_LATENCY_SAMPLES:-3}
+      PROBE_RETENTION_DAYS: ${PROBE_RETENTION_DAYS:-30}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: netinventory_frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
